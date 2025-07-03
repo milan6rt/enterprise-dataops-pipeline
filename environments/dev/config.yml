@@ -1,0 +1,12 @@
+# Development Environment Configuration
+variables:
+- name: databaseName
+  value: 'dev-customers-db'
+- name: environmentName
+  value: 'Development'
+- name: environmentColor
+  value: '🔧'
+- name: autoApproval
+  value: true
+- name: runTests
+  value: false

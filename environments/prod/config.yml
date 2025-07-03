@@ -1,0 +1,12 @@
+# Production Environment Configuration
+variables:
+- name: databaseName
+  value: 'prod-customers-db'  
+- name: environmentName
+  value: 'Production'
+- name: environmentColor
+  value: '🚀'
+- name: autoApproval
+  value: false
+- name: runTests
+  value: true

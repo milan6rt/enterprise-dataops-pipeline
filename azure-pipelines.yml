@@ -1,0 +1,344 @@
+# Enterprise Multi-Environment DataOps Pipeline
+# DEV → PRE-PROD → PROD deployment workflow
+
+trigger:
+- main
+- develop
+
+pool:
+  name: 'Default'  # Your existing Mac agent
+
+variables:
+  sqlServerName: 'sqlserver-dataops-demo-milan.database.windows.net'
+  majorVersion: '1'
+  minorVersion: '0'
+  patchVersion: $[counter(format('{0}.{1}', variables['majorVersion'], variables['minorVersion']), 1)]
+
+stages:
+#==========================================
+# DEV ENVIRONMENT (Auto-deploy always)
+#==========================================
+- stage: DeployDev
+  displayName: '🔧 Deploy to Development'
+  condition: always()
+  variables:
+  - template: environments/dev/config.yml
+  jobs:
+  - job: DeployToDevDB
+    displayName: 'Deploy to DEV Database'
+    steps:
+    
+    - checkout: self
+      displayName: '�� Checkout Source Code'
+    
+    - script: |
+        echo "$(environmentColor) Deploying to $(environmentName) Environment"
+        echo "Database: $(databaseName)"
+        echo "Version: $(majorVersion).$(minorVersion).$(patchVersion)"
+        echo "Auto-approval: $(autoApproval)"
+        echo ""
+        echo "📄 Files to deploy:"
+        find sql/ -name "*.sql" -type f
+      displayName: '📋 Environment Info'
+    
+    - script: |
+        echo "📦 Installing dependencies..."
+        pip3 install pymssql
+        echo "✅ Dependencies installed"
+      displayName: '📦 Install Dependencies'
+    
+    - script: |
+        echo "🚀 Deploying SQL changes to $(environmentName)..."
+        
+        python3 << 'EOF'
+        import pymssql
+        import sys
+        
+        server = '$(sqlServerName)'
+        database = '$(databaseName)'
+        username = '$(sqlUsername)'
+        password = '$(sqlPassword)'
+        
+        try:
+            print(f"📡 Connecting to: {server}")
+            print(f"📊 Database: {database}")
+            
+            # Read SQL file
+            with open('sql/create_customers_table.sql', 'r') as file:
+                sql_script = file.read()
+            
+            print("📜 Executing SQL script...")
+            
+            # Connect and execute
+            conn = pymssql.connect(
+                server=server,
+                user=username,
+                password=password,
+                database=database,
+                timeout=30
+            )
+            
+            cursor = conn.cursor()
+            cursor.execute(sql_script)
+            conn.commit()
+            
+            print("✅ SQL script executed successfully!")
+            
+            # Show deployment results
+            cursor.execute("SELECT COUNT(*) FROM customers")
+            count = cursor.fetchone()[0]
+            print(f"📊 $(environmentName): {count} customers in database")
+            
+            cursor.execute("SELECT TOP 3 Name, Email FROM customers ORDER BY CreatedDate DESC")
+            recent_customers = cursor.fetchall()
+            print("👥 Recent customers:")
+            for customer in recent_customers:
+                print(f"  - {customer[0]} ({customer[1]})")
+            
+            conn.close()
+            print("🎉 DEV deployment completed successfully!")
+            
+        except Exception as e:
+            print(f"❌ DEV deployment failed: {str(e)}")
+            sys.exit(1)
+        EOF
+      displayName: '🚀 Deploy to DEV Database'
+
+#==========================================
+# PRE-PROD ENVIRONMENT (Auto if DEV passes)
+#==========================================
+- stage: DeployPreProd
+  displayName: '🧪 Deploy to Pre-Production'
+  dependsOn: DeployDev
+  condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+  variables:
+  - template: environments/preprod/config.yml
+  jobs:
+  - job: DeployToPreProdDB
+    displayName: 'Deploy to PRE-PROD Database'
+    steps:
+    
+    - checkout: self
+    
+    - script: |
+        echo "$(environmentColor) Deploying to $(environmentName) Environment"
+        echo "Database: $(databaseName)"
+        echo "Run tests: $(runTests)"
+        pip3 install pymssql
+      displayName: '📦 Setup PRE-PROD Deployment'
+    
+    - script: |
+        echo "🚀 Deploying SQL changes to $(environmentName)..."
+        
+        python3 << 'EOF'
+        import pymssql
+        import sys
+        
+        server = '$(sqlServerName)'
+        database = '$(databaseName)'
+        username = '$(sqlUsername)'
+        password = '$(sqlPassword)'
+        
+        try:
+            with open('sql/create_customers_table.sql', 'r') as file:
+                sql_script = file.read()
+            
+            conn = pymssql.connect(
+                server=server,
+                user=username,
+                password=password,
+                database=database,
+                timeout=30
+            )
+            
+            cursor = conn.cursor()
+            cursor.execute(sql_script)
+            conn.commit()
+            
+            # Verify deployment
+            cursor.execute("SELECT COUNT(*) FROM customers")
+            count = cursor.fetchone()[0]
+            print(f"✅ PRE-PROD: {count} customers in database")
+            
+            conn.close()
+            print("🎉 PRE-PROD deployment completed!")
+            
+        except Exception as e:
+            print(f"❌ PRE-PROD deployment failed: {str(e)}")
+            sys.exit(1)
+        EOF
+      displayName: '🚀 Deploy to PRE-PROD Database'
+      
+  - job: RunDataQualityTests
+    displayName: 'Run Data Quality Tests'
+    dependsOn: DeployToPreProdDB
+    condition: eq(variables['runTests'], 'true')
+    steps:
+    
+    - checkout: self
+    
+    - script: |
+        echo "🧪 Running data quality tests in $(environmentName)..."
+        
+        # Set environment variables for the test script
+        export SQL_SERVER='$(sqlServerName)'
+        export SQL_DATABASE='$(databaseName)'
+        export SQL_USERNAME='$(sqlUsername)'
+        export SQL_PASSWORD='$(sqlPassword)'
+        
+        # Run the tests
+        python3 tests/data_quality_tests.py
+        
+        if [ $? -eq 0 ]; then
+            echo "🎉 All data quality tests passed in PRE-PROD!"
+        else
+            echo "❌ Data quality tests failed in PRE-PROD!"
+            exit 1
+        fi
+      displayName: '🧪 Validate Data Quality'
+
+#==========================================
+# PROD ENVIRONMENT (Manual approval required)
+#==========================================
+- stage: ApproveProduction
+  displayName: '⏸️ Production Approval Gate'
+  dependsOn: DeployPreProd
+  condition: and(succeeded(), eq(variables['Build.SourceBranch'], 'refs/heads/main'))
+  jobs:
+  - job: waitForValidation
+    displayName: 'Wait for Manual Approval'
+    pool: server
+    timeoutInMinutes: 1440 # 24 hours
+    steps:
+    - task: ManualValidation@0
+      timeoutInMinutes: 1440
+      inputs:
+        notifyUsers: |
+          # Add your email here for notifications
+        instructions: |
+          🚀 **PRODUCTION DEPLOYMENT APPROVAL REQUIRED**
+          
+          **Environment:** Production Database (prod-customers-db)
+          **Version:** $(majorVersion).$(minorVersion).$(patchVersion)
+          **Changes:** Customer table deployment
+          
+          **Pre-checks completed:**
+          ✅ DEV deployment successful
+          ✅ PRE-PROD deployment successful  
+          ✅ Data quality tests passed
+          
+          **Please review and approve for PRODUCTION deployment.**
+          
+          ⚠️ This will affect the live production database.
+
+- stage: DeployProd
+  displayName: '🚀 Deploy to Production'
+  dependsOn: ApproveProduction
+  condition: succeeded()
+  variables:
+  - template: environments/prod/config.yml
+  jobs:
+  - deployment: DeployToProdDB
+    displayName: 'Deploy to PRODUCTION Database'
+    environment: 'production'
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          
+          - checkout: self
+          
+          - script: |
+              echo "$(environmentColor) DEPLOYING TO $(environmentName) - LIVE ENVIRONMENT"
+              echo "Database: $(databaseName)"
+              echo "⚠️  THIS IS PRODUCTION - PROCEED WITH CAUTION"
+              pip3 install pymssql
+            displayName: '🚀 Setup PRODUCTION Deployment'
+          
+          - script: |
+              echo "🚀 Deploying SQL changes to PRODUCTION..."
+              
+              python3 << 'EOF'
+              import pymssql
+              import sys
+              
+              server = '$(sqlServerName)'
+              database = '$(databaseName)'
+              username = '$(sqlUsername)'
+              password = '$(sqlPassword)'
+              
+              try:
+                  print("⚠️  PRODUCTION DEPLOYMENT STARTING...")
+                  
+                  with open('sql/create_customers_table.sql', 'r') as file:
+                      sql_script = file.read()
+                  
+                  conn = pymssql.connect(
+                      server=server,
+                      user=username,
+                      password=password,
+                      database=database,
+                      timeout=30
+                  )
+                  
+                  cursor = conn.cursor()
+                  cursor.execute(sql_script)
+                  conn.commit()
+                  
+                  # Verify production deployment
+                  cursor.execute("SELECT COUNT(*) FROM customers")
+                  count = cursor.fetchone()[0]
+                  print(f"✅ PRODUCTION: {count} customers in database")
+                  
+                  conn.close()
+                  print("🎉 PRODUCTION DEPLOYMENT SUCCESSFUL!")
+                  
+              except Exception as e:
+                  print(f"❌ PRODUCTION deployment failed: {str(e)}")
+                  sys.exit(1)
+              EOF
+            displayName: '🚀 Deploy to PRODUCTION Database'
+            
+  - job: ProductionValidation
+    displayName: 'Production Smoke Tests'
+    dependsOn: DeployToProdDB
+    steps:
+    
+    - checkout: self
+    
+    - script: |
+        echo "🔍 Running production smoke tests..."
+        
+        export SQL_SERVER='$(sqlServerName)'
+        export SQL_DATABASE='$(databaseName)'
+        export SQL_USERNAME='$(sqlUsername)'
+        export SQL_PASSWORD='$(sqlPassword)'
+        
+        python3 tests/data_quality_tests.py
+        
+        if [ $? -eq 0 ]; then
+            echo "🎉 Production smoke tests passed!"
+        else
+            echo "❌ Production smoke tests failed!"
+            exit 1
+        fi
+      displayName: '🔍 Validate Production Health'
+      
+  - job: NotifySuccess
+    displayName: 'Notify Deployment Success'
+    dependsOn: ProductionValidation
+    steps:
+    - script: |
+        echo "🎉🚀 PRODUCTION DEPLOYMENT COMPLETED SUCCESSFULLY! 🚀🎉"
+        echo ""
+        echo "✅ All environments deployed:"
+        echo "  🔧 DEV: dev-customers-db"
+        echo "  🧪 PRE-PROD: preprod-customers-db"  
+        echo "  🚀 PROD: prod-customers-db"
+        echo ""
+        echo "✅ All tests passed"
+        echo "✅ Data quality validated"
+        echo "✅ Production health confirmed"
+        echo ""
+        echo "Version $(majorVersion).$(minorVersion).$(patchVersion) is now live!"
+      displayName: '🎉 Deployment Success Notification'

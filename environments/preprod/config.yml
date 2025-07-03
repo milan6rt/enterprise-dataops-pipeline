@@ -1,0 +1,12 @@
+# Pre-Production Environment Configuration  
+variables:
+- name: databaseName
+  value: 'preprod-customers-db'
+- name: environmentName
+  value: 'Pre-Production'
+- name: environmentColor
+  value: '🧪'
+- name: autoApproval
+  value: true
+- name: runTests
+  value: true
