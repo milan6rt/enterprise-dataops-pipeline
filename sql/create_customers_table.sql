@@ -35,7 +35,12 @@ END
 ELSE
 BEGIN
     PRINT 'INFO: Enterprise sample data already exists.';
-END
+INSERT INTO customers (Name, Email, Phone, Department)
+VALUES 
+    ('John Enterprise', 'john@enterprise.com', '555-0101', 'Engineering'),
+    ('Sarah DataOps', 'sarah@enterprise.com', '555-0102', 'Data Analytics'),
+    ('Mike Pipeline', 'mike@enterprise.com', '555-0103', 'DevOps'),
+    ('Lisa CloudOps', 'lisa@enterprise.com', '555-0104', 'Cloud Operations');END
 
 -- Show environment status
 SELECT 
