@@ -27,7 +27,7 @@ PRINT 'INFO: Cleared existing customer data for fresh deployment.';
 -- Insert fresh customer data
 INSERT INTO customers (Name, Email, Department)
 VALUES 
-    ('John Enterprise', 'john@enterprise.com', 'Data Ops'),
+    ('John Enterprise', 'john@enterprise.com', 'Data Engineer'),
     ('Sarah DataOps', 'sarah@enterprise.com', 'Data Analytics'),
     ('Mike Pipeline', 'mike@enterprise.com', 'DevOps'),
     ('Lisa CloudOps', 'lisa@enterprise.com', 'Cloud Operations');
